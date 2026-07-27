@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentferry.local/schemas/session.schema.json",
+  "title": "Codex Session Export",
+  "description": "Schema for a Codex (OpenAI) session export file. Single-file JSON (not JSONL). Top-level holds metadata, an ordered turns array, and a format version string.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["metadata", "turns", "version"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "description": "Session-level metadata describing the agent run.",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "model",
+        "sessionId",
+        "projectName",
+        "projectPath",
+        "startedAt",
+        "endedAt"
+      ],
+      "properties": {
+        "agent": {
+          "type": "string",
+          "description": "Agent identifier, e.g. \"codex\".",
+          "examples": ["codex"]
+        },
+        "model": {
+          "type": "string",
+          "description": "Model used for the session, e.g. \"gpt-5.4\".",
+          "examples": ["gpt-5.4"]
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Globally unique session identifier (UUID).",
+          "examples": ["019cfb00-0e3c-7961-aabe-d984f737e274"]
+        },
+        "projectName": {
+          "type": "string",
+          "description": "Short project/workspace name.",
+          "examples": ["code"]
+        },
+        "projectPath": {
+          "type": "string",
+          "description": "Absolute filesystem path of the project the session ran in.",
+          "examples": ["/Users/anicolae/code"]
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Session start time (ISO 8601, UTC 'Z')."
+        },
+        "endedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Session end time (ISO 8601, UTC 'Z')."
+        }
+      }
+    },
+    "turns": {
+      "type": "array",
+      "description": "Ordered list of conversation turns. Tools results appear right after the assistant turn that issued the corresponding tool_use, linked by toolUseId/id.",
+      "items": { "$ref": "#/$defs/turn" }
+    },
+    "version": {
+      "type": "string",
+      "description": "Format version string.",
+      "examples": ["1"]
+    }
+  },
+  "$defs": {
+    "turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "role", "timestamp", "content"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for this turn (UUID).",
+          "examples": ["EC38AB3F-5FFA-450D-9DEA-0491D9270CFC"]
+        },
+        "role": {
+          "type": "string",
+          "enum": ["user", "assistant", "tool"],
+          "description": "Speaker of the turn."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Turn creation time (ISO 8601, UTC 'Z')."
+        },
+        "content": {
+          "type": "array",
+          "description": "One or more content blocks. A single turn may mix text and tool_use blocks; tool results live in their own 'tool' turns.",
+          "items": { "$ref": "#/$defs/contentBlock" }
+        }
+      }
+    },
+    "contentBlock": {
+      "type": "object",
+      "description": "A content block. Discriminated by 'type'.",
+      "required": ["type"],
+      "oneOf": [
+        { "$ref": "#/$defs/textBlock" },
+        { "$ref": "#/$defs/toolUseBlock" },
+        { "$ref": "#/$defs/toolResultBlock" }
+      ]
+    },
+    "textBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": {
+        "type": { "const": "text" },
+        "text": {
+          "type": "string",
+          "description": "Plain-text content."
+        }
+      }
+    },
+    "toolUseBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "name", "input"],
+      "properties": {
+        "type": { "const": "tool_use" },
+        "id": {
+          "type": "string",
+          "description": "Tool call identifier, prefixed like 'call_'. Paired with tool_result.toolUseId.",
+          "examples": ["call_FkFgACmXLKVCXNCaALFttaXW"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Tool name, e.g. exec_command, write_stdin.",
+          "examples": ["exec_command", "write_stdin"]
+        },
+        "input": {
+          "type": "string",
+          "description": "Tool arguments as a JSON-ENCODED STRING (e.g. '{\"cmd\":\"...\",\"yield_time_ms\":1000,\"max_output_tokens\":400}'). Must be parsed as JSON to inspect; common inner fields: cmd, workdir, yield_time_ms, max_output_tokens, session_id, chars."
+        }
+      }
+    },
+    "toolResultBlock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "toolUseId", "output"],
+      "properties": {
+        "type": { "const": "tool_result" },
+        "toolUseId": {
+          "type": "string",
+          "description": "Matches the id of the originating tool_use block.",
+          "examples": ["call_FkFgACmXLKVCXNCaALFttaXW"]
+        },
+        "output": {
+          "type": "string",
+          "description": "Raw tool output text, including command echo, wall time, exit code, and stdout/stderr. Success/failure is embedded here (e.g. 'Process exited with code 0')."
+        }
+      }
+    }
+  }
+}
