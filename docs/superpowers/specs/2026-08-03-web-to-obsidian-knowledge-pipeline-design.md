@@ -8,7 +8,7 @@
 
 本系统从公开网页发现内容、抓取并标准化正文，或从本地 Codex 与 WorkBuddy 会话 JSONL 归并出对话证据，借助 LLM 提炼为可互相链接的知识概念，再直接发布到 Obsidian vault。每一个生成的主张都必须保留来源、证据、采集时间和生成记录；系统支持增量更新，并且不会覆盖人工维护的笔记内容。
 
-系统采用“契约优先”原则：每个组件可以独立部署或用任意编程语言重写。组件之间只交换带版本的 JSON 事件和 Markdown 文件，不依赖共享运行时、内部 SDK 或某种特定模型供应商。
+系统采用“契约优先”原则：每个组件可以独立部署或用任意编程语言重写。组件之间只交换带版本的 JSON 事件和符合 Open Knowledge Format（OKF）v0.2 的 Markdown 文件，不依赖共享运行时、内部 SDK 或某种特定模型供应商。
 
 ## 2. 目标
 
@@ -269,16 +269,17 @@ WorkBuddy 映射规则：
 每个会话 generation 发布为一个 Obsidian 目录 bundle，而不是一篇摘要笔记。目录中的文件共同构成同一来源工件，必须在一次发布事务中一起更新：
 
     01 Sources/Sessions/<provider>/<YYYY>/<session-id>_<session-title>/
-      index.md       # 主文档：完整 user 与 assistant 消息
+      index.md       # OKF 目录清单；不含 frontmatter
+      session.md     # 主文档：完整 user 与 assistant 消息
       reasoning.md   # 所有 reasoning 记录，按 turn 分节
       system.md      # session_meta、system/base instructions、turn_context、world_state
       tools.md       # 工具调用、参数、结果，按 call ID 配对
       events.md      # lifecycle、多智能体、压缩、文件快照、未知记录
       assets/        # 过大且可安全发布的文本或二进制附件
 
-目录名固定为 <session-id>_<session-title>。其中 session ID 是稳定主键；session title 经过 slug 规范化，仅用于可读性。首次发布后目录不因标题变化而自动改名；若标题为空，使用 untitled。generation 只保存在 index.md frontmatter、publication manifest 与 evidence ID 中，作为文件重写/截断时的内部版本元数据。
+目录名固定为 <session-id>_<session-title>。其中 session ID 是稳定主键；session title 经过 slug 规范化，仅用于可读性。首次发布后目录不因标题变化而自动改名；若标题为空，使用 untitled。generation 只保存在 session.md frontmatter、publication manifest 与 evidence ID 中，作为文件重写/截断时的内部版本元数据。
 
-index.md 必须按 JSONL 原始行序完整保存 user_message 与 assistant_message 的原始内容，不得以摘要替代消息正文。每个 turn 具有稳定锚点，并紧随对相关附属记录的链接：
+session.md 必须按 JSONL 原始行序完整保存 user_message 与 assistant_message 的原始内容，不得以摘要替代消息正文。每个 turn 具有稳定锚点，并紧随对相关附属记录的链接：
 
     ## Turn <turn-key> ^turn-<stable-id>
 
@@ -289,13 +290,13 @@ index.md 必须按 JSONL 原始行序完整保存 user_message 与 assistant_mes
     <完整 assistant 消息正文> ^msg-<stable-id>
 
     关联记录：
-    - [[reasoning#^reasoning-<stable-id>|本轮推理]]
-    - [[tools#^tool-<call-id>|工具调用与结果]]
-    - [[system#^context-<stable-id>|本轮运行上下文]]
+    - [本轮推理](./reasoning.md#^reasoning-<stable-id>)
+    - [工具调用与结果](./tools.md#^tool-<call-id>)
+    - [本轮运行上下文](./system.md#^context-<stable-id>)
 
 reasoning.md、system.md、tools.md 和 events.md 必须保留各自记录的结构和 block ID。工具记录包含名称、状态、原始参数字符串、可解析时的 JSON 参数、结果、关联 call ID、时间和 provider 扩展字段。工具输出超过配置的单块上限时，正文保存前 N 个字符、完整内容以受管附件或分片 Markdown 保存，并在 tools.md 中链接；不得静默丢失。
 
-所有会话记录均按原始内容物化到 bundle。无法以内嵌 Markdown 表示的二进制数据和超过单文件上限的内容必须写入 assets 或受管分片 Markdown，并在原位置写入链接、哈希与原始 JSONL 行引用；不得因内容类别而省略。
+所有会话记录均按原始内容物化到 bundle。无法以内嵌 Markdown 表示的二进制数据和超过单文件上限的内容必须写入 assets 或受管分片 Markdown，并在原位置写入链接、哈希与原始 JSONL 行引用；不得因内容类别而省略。除 `index.md` 外，session.md、reasoning.md、system.md、tools.md、events.md 及任何受管分片 Markdown 均为 OKF 概念文档，必须各自具有 YAML frontmatter 与非空 `type`。
 
 会话 bundle 主文档可含自动生成的概览，但概览是附加区块，不能取代完整消息：
 
@@ -480,12 +481,26 @@ evidence ID；保留每个主张的全部证据。
 
 ## 7. 数据模型与 Obsidian 表示
 
-### 7.1 Vault 完整目录结构
+### 7.1 OKF v0.2 合规边界
+
+整个 `Vault/` 是一个以 OKF v0.2 为目标的知识 bundle，而不只是供 Obsidian 读取的任意 Markdown 目录。发布器必须满足以下规则：
+
+- 每个非保留名称的 `.md` 文件都是一个 OKF 概念文档：文件开头具有可解析的 YAML frontmatter，且包含非空 `type`。`kind`、`id`、`managed_by`、`document_version_id` 等是允许的管道扩展字段，不能替代 `type`。
+- `index.md` 与 `log.md` 是 OKF 保留文件。任意目录的 `index.md` 仅作目录清单，不得有 frontmatter；唯一例外是 bundle 根的 `index.md` 可仅声明 `okf_version: "0.2"`。会话正文、来源正文和其他概念不得使用保留文件名。
+- 使用 `sources` 时，每个条目必须有 `resource`；管道的 `source_id`、`document_version_id`、`evidence_ids` 等作为同一条目的扩展字段保留。主张在正文中以与 `sources[].id` 相同的 Markdown footnote 标签归因，并可同时提供精确 evidence block 链接。
+- `generated` 使用 `by` 和 `at`；自动化 actor 采用 `<producer>/<version>`，例如 `web-knowledge-pipeline/1.0`。生命周期值仅为 `draft`、`stable` 或 `deprecated`，未指定时视为 `stable`。
+- 概念间和证据定位使用标准 Markdown 链接。Obsidian block ID（`^ev-...`）可作为 URL fragment；不得把 Obsidian wiki link 作为唯一链接表示。
+- 运行时临时文件、锁和 staging 不属于知识内容，不得在 bundle 内产生无 frontmatter 的 Markdown。版本缓存使用 JSON manifest 或完整的已发布概念文档副本。
+
+这些规则是发布前校验的一部分；它们不限制 Obsidian 的展示能力，也不妨碍保留未知 frontmatter 与人工区块。
+
+### 7.2 Vault 完整目录结构
 
 vault 根目录必须由配置提供，不能从进程当前目录推断。规范目录如下：
 
 ~~~text
 Vault/
+  index.md                    # OKF bundle 根目录清单；可声明 okf_version: "0.2"
   00 System/
     pipeline-config.md
     concept-types.md
@@ -494,7 +509,8 @@ Vault/
   01 Sources/
     Web/<domain>/<YYYY>/<source-slug>--<short-hash>.md
     Sessions/<provider>/<YYYY>/<session-id>_<session-title>/
-      index.md
+      index.md                # 目录清单，不含 frontmatter
+      session.md              # type: Agent Session
       reasoning.md
       system.md
       tools.md
@@ -515,32 +531,35 @@ Vault/
     checkpoints.json
     locks/
     staging/
-    versions/<note-id>/<content-hash>.md
+    versions/<note-id>/<content-hash>.json
 ~~~
 
-00 System、03 Indexes、04 Reports 和 .crawler 均由管道维护。用户只应在来源和概念笔记明确标出的“人工笔记”区域写入内容。05 Attachments 是可选目录，只有策略显式允许的资源才能下载；网页引用的附件不会被默认保存。原始网页、清洗全文和原始会话 JSONL 默认存于 vault 外的证据仓库。
+00 System、03 Indexes、04 Reports 和 .crawler 均由管道维护。00 System 中的 Markdown 使用 `type: Pipeline Configuration`、`type: Concept Type Registry` 等类型；03 Indexes 使用 `type: Generated Index`；04 Reports 使用 `type: Run Report` 或 `type: Conflict Report`。因此它们在 OKF 中仍是概念文档，而不是未结构化旁路文件。`.crawler/` 只保存 JSON、锁和临时文件，不写入 Markdown。用户只应在来源和概念笔记明确标出的“人工笔记”区域写入内容。05 Attachments 是可选目录，只有策略显式允许的资源才能下载；网页引用的附件不会被默认保存。原始网页、清洗全文和原始会话 JSONL 默认存于 vault 外的证据仓库。
 
-### 7.2 标识符、文件名与链接
+### 7.3 标识符、文件名与链接
 
 来源 ID 形如 source:<domain-slug>:<short-url-or-content-hash>。文档版本 ID 形如 docv:<source-id>:<content-hash-prefix>。概念 ID 形如 concept:<type-slug>:<slug>；发生冲突时添加稳定的短哈希。
 
 slug 采用 Unicode 规范化、大小写折叠、标点折叠和空白压缩，最长 80 字符。出现路径分隔符、纯点路径段或保留文件名字符时必须拒绝发布。publication-manifest.json 是 ID 到文件路径的权威映射，Obsidian 显示名称不是标识符。
 
-每个来源证据片段都有 Obsidian block ID，例如 ^ev-a1b2c3。概念主张通过 wiki link 指向该 block，例如：
+每个来源证据片段都有 Obsidian block ID，例如 `^ev-a1b2c3`。概念主张通过标准 Markdown 链接指向该 block，例如：
 
 ~~~text
-[[01 Sources/example/2026/example--a1b2#^ev-a1b2c3|证据]]
+[证据](</01 Sources/Web/example/2026/example--a1b2.md#^ev-a1b2c3>)
 ~~~
 
-### 7.3 来源笔记完整最小格式
+### 7.4 来源笔记完整最小格式
 
 每个通过抓取和策略校验的标准化文档版本都创建一篇来源笔记。frontmatter 必填字段包括 ID、类型、标题、规范 URL、原始 URL、域名、抓取时间、文档版本 ID、内容哈希、语言、状态、抓取元数据、生成元数据和管道所有者。
 
 ~~~markdown
 ---
 id: source:example-com:ab12cd34
+type: Web Article
 kind: web-article
 title: Article title
+description: 从 example.com 抓取并标准化的文章来源记录。
+resource: https://example.com/canonical
 canonical_url: https://example.com/canonical
 original_url: https://example.com/original
 domain: example.com
@@ -550,21 +569,25 @@ captured_at: 2026-08-03T12:00:00Z
 document_version_id: docv:source-example:e9f1
 content_hash: sha256:e9f1
 language: en
-status: active
+status: stable
 crawl:
   robots_allowed: true
   http_status: 200
   final_url: https://example.com/canonical
 generated:
-  by: web-knowledge-pipeline
+  by: web-knowledge-pipeline/1.0
   at: 2026-08-03T12:01:00Z
   prompt_version: knowledge-extraction/1.0
+sources:
+  - id: origin
+    resource: https://example.com/canonical
+    title: Article title
 managed_by: web-knowledge-pipeline
 ---
 
 # 摘要
 <!-- AGENT:BEGIN source-summary -->
-一段由系统生成的简洁来源摘要。
+一段由系统生成的简洁来源摘要。[^origin]
 <!-- AGENT:END source-summary -->
 
 # 证据片段
@@ -572,50 +595,59 @@ managed_by: web-knowledge-pipeline
 
 # 提取出的概念
 <!-- AGENT:BEGIN extracted-concepts -->
-- [[02 Concepts/technology/ai-infrastructure]]
+- [AI Infrastructure](</02 Concepts/technology/ai-infrastructure.md>)
 <!-- AGENT:END extracted-concepts -->
 
 # 人工笔记
 此处由用户维护。
+
+[^origin]: [Article title](https://example.com/canonical)
 ~~~
 
 来源笔记正文默认不得保存全文。证据引文的最大长度由策略配置，并始终保留证据 block ID。
 
-### 7.4 会话来源笔记完整最小格式
+### 7.5 会话来源笔记完整最小格式
 
-一个 session generation 对应一个会话来源 bundle；其 index.md 是主会话笔记，追加新 JSONL 行时更新同一 generation 的受管区块。会话 bundle 与网页来源笔记同样是概念主张的证据源，但其语义是“会话记录”，而不是外部网页事实。
+一个 session generation 对应一个会话来源 bundle；其 `session.md` 是主会话笔记，追加新 JSONL 行时更新同一 generation 的受管区块。目录的 `index.md` 仅列出 `session.md` 和附属文档，不含 frontmatter。会话 bundle 与网页来源笔记同样是概念主张的证据源，但其语义是“会话记录”，而不是外部网页事实。
 
 ~~~markdown
 ---
 id: source:session:codex:019-example
+type: Agent Session
 kind: agent-session
 provider: codex
 session_id: 019-example
 session_generation: 3
 title: 会话展示标题
+description: Codex 会话 generation 3 的完整原始记录。
+resource: evidence://codex/019-example/generation-3
 source_file_ref: evidence://codex/019-example/generation-3
 cwd_display: Workspace/AgentFerry
-bundle_files: [index.md, reasoning.md, system.md, tools.md, events.md]
+bundle_files: [session.md, reasoning.md, system.md, tools.md, events.md]
 started_at: 2026-08-03T10:00:00Z
 captured_at: 2026-08-03T12:00:00Z
 line_range: [1, 842]
 content_hash: sha256:...
-status: active
+status: stable
 ingestion:
   schema: codex-rollout-legacy
   reasoning_included: true
   system_context_included: true
   raw_tool_output_included: true
 generated:
-  by: web-knowledge-pipeline
+  by: web-knowledge-pipeline/1.0
   at: 2026-08-03T12:01:00Z
   prompt_version: knowledge-extraction/1.0
+sources:
+  - id: session-jsonl
+    resource: evidence://codex/019-example/generation-3
+    title: Codex session JSONL, generation 3
 managed_by: web-knowledge-pipeline
 ---
 
 # 会话概览
 <!-- AGENT:BEGIN session-summary -->
-由证据支持的任务、决定、执行结果和待办摘要。
+由证据支持的任务、决定、执行结果和待办摘要。[^session-jsonl]
 <!-- AGENT:END session-summary -->
 
 # 完整会话
@@ -628,22 +660,24 @@ managed_by: web-knowledge-pipeline
 完整 assistant 消息。 ^msg-019-42
 
 关联记录：
-- [[reasoning#^reasoning-019-42|本轮推理]]
-- [[tools#^tool-call-019-43|工具调用与结果]]
-- [[system#^context-019-turn-1|运行上下文]]
+- [本轮推理](./reasoning.md#^reasoning-019-42)
+- [工具调用与结果](./tools.md#^tool-call-019-43)
+- [运行上下文](./system.md#^context-019-turn-1)
 
 # 提取出的概念
 <!-- AGENT:BEGIN extracted-concepts -->
-- [[02 Concepts/decision/architecture-choice]]
+- [Architecture Choice](</02 Concepts/decision/architecture-choice.md>)
 <!-- AGENT:END extracted-concepts -->
 
 # 人工笔记
 此处由用户维护。
+
+[^session-jsonl]: Codex session JSONL, generation 3
 ~~~
 
-reasoning.md、system.md、tools.md 和 events.md 是该主笔记的必备附属文件，并分别保存推理、系统/运行上下文、工具调用/结果和其他会话事件的完整原始表示。source_file_ref 是证据仓库引用，不是本地绝对路径；cwd_display 保存原始工作目录。
+reasoning.md、system.md、tools.md 和 events.md 是该主笔记的必备附属文件，并分别保存推理、系统/运行上下文、工具调用/结果和其他会话事件的完整原始表示。它们分别使用 `type: Session Reasoning`、`type: Session Context`、`type: Session Tools` 和 `type: Session Events`，并以 `sources` 指回 session.md 或 `source_file_ref`。source_file_ref 是证据仓库引用，不是本地绝对路径；cwd_display 保存原始工作目录。
 
-### 7.5 概念笔记完整最小格式
+### 7.6 概念笔记完整最小格式
 
 只有在解析器分配稳定 concept ID 后，才能发布概念笔记。必填 frontmatter 为：id、type、title、status、created_at、updated_at、至少一条带文档版本与 evidence ID 的 sources、generated 和 managed_by。
 
@@ -654,19 +688,22 @@ type: Technology
 title: AI Infrastructure
 aliases: [AI 基础设施]
 tags: [technology, ai]
-status: active
+status: stable
 created_at: 2026-08-03T12:01:00Z
 updated_at: 2026-08-03T12:01:00Z
 sources:
-  - source_id: source:example-com:ab12cd34
+  - id: source-example-docv-e9f1
+    resource: "/01 Sources/Web/example/2026/example--a1b2.md"
+    title: Article title
+    source_id: source:example-com:ab12cd34
     canonical_url: https://example.com/article
     document_version_id: docv:source-example:e9f1
     evidence_ids: [ev-a1b2c3]
 generated:
-  by: web-knowledge-pipeline
+  by: web-knowledge-pipeline/1.0
+  at: 2026-08-03T12:01:00Z
   model: provider/model
   prompt_version: knowledge-extraction/1.0
-  extracted_at: 2026-08-03T12:01:00Z
 managed_by: web-knowledge-pipeline
 ---
 
@@ -679,28 +716,30 @@ managed_by: web-knowledge-pipeline
 <!-- AGENT:BEGIN claims -->
 | ID | 主张 | 置信度 | 证据 |
 | --- | --- | ---: | --- |
-| claim-1 | 一条可验证的主张。 | 0.86 | [[01 Sources/example/2026/example--a1b2#^ev-a1b2c3|证据]] |
+| claim-1 | 一条可验证的主张。[^source-example-docv-e9f1] | 0.86 | [证据](</01 Sources/Web/example/2026/example--a1b2.md#^ev-a1b2c3>) |
 <!-- AGENT:END claims -->
 
 # 关联概念
 <!-- AGENT:BEGIN relations -->
-- depends on: [[02 Concepts/technology/related-concept]]
+- depends on: [Related Concept](</02 Concepts/technology/related-concept.md>)
 <!-- AGENT:END relations -->
 
 # 来源
 <!-- AGENT:BEGIN sources -->
-- [[01 Sources/example/2026/example--a1b2|Article title]]
+- [Article title](</01 Sources/Web/example/2026/example--a1b2.md>)
 <!-- AGENT:END sources -->
 
 # 人工笔记
 此处由用户维护。
+
+[^source-example-docv-e9f1]: [Article title](</01 Sources/Web/example/2026/example--a1b2.md#^ev-a1b2c3>)
 ~~~
 
 摘要、关键主张、关联概念和来源是必需的受管区块。未知 frontmatter 字段、用户自建标题及所有受管标记之外的文字，必须原样保留。
 
-### 7.6 索引与运行报告
+### 7.7 索引与运行报告
 
-索引是衍生物：每次成功发布后，根据 publication-manifest.json 重新生成；它们只包含链接，永远不是事实来源。每份运行报告至少包含 trace ID、来源、发现数量、抓取结果、文档版本、模型调用、概念 upsert、发布路径、warning 和冲突。
+索引是衍生物：每次成功发布后，根据 publication-manifest.json 重新生成；它们只包含链接，永远不是事实来源。每个 `concepts-by-*.md` 是 `type: Generated Index` 的概念文档；若使用 `index.md` 作为目录索引，则该文件必须遵守 §7.1 的保留文件规则。每份运行报告是 `type: Run Report` 或 `type: Conflict Report` 的概念文档，至少包含 trace ID、来源、发现数量、抓取结果、文档版本、模型调用、概念 upsert、发布路径、warning 和冲突。
 
 ## 8. 抓取与同步行为
 
@@ -756,7 +795,7 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 自动发布仍需具备文件级事务语义：
 
 1. 在 vault 外部 staging 目录渲染候选 Markdown。
-2. 解析并验证 YAML frontmatter、受管标记、所有内部链接和目标路径。
+2. 解析并验证 YAML frontmatter、受管标记、标准 Markdown 链接语法和目标路径；已存在但暂未写入的 OKF 概念链接可保留为 broken link，不得因此拒绝发布。
 3. 读取现有笔记，合并人工区块与未知字段。
 4. 在目标文件同一文件系统写入临时文件，再原子替换目标文件。
 5. 更新 publication-manifest.json 与控制库中的发布记录。
@@ -799,7 +838,8 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - **跨语言契约测试：** 同一套事件 fixture 必须能被不同语言的组件实现消费和产出。
 - **会话归并测试：** 使用 Codex legacy rollout 与 WorkBuddy JSONL fixture，验证按行序读取、call ID 配对、重复消息去重、截断 generation 与未知记录保留。
 - **会话完整性测试：** 含密钥、绝对路径、系统指令、reasoning 和原始工具输出的 fixture 在 Evidence Store、LLM 请求与 vault 笔记中保持一致的完整物化。
-- **会话 bundle 测试：** 验证每个 session generation 同时生成 index.md、reasoning.md、system.md、tools.md 与 events.md；index.md 包含完整用户/assistant 消息，并能通过稳定链接跳转到对应 turn、推理和工具记录。
+- **OKF 合规测试：** 扫描整个 vault，验证每个非保留 `.md` 均有可解析 YAML frontmatter 与非空 `type`；验证嵌套 `index.md` 无 frontmatter、根 `index.md` 至多声明 `okf_version`，并验证 `sources` 条目均含 `resource`。
+- **会话 bundle 测试：** 验证每个 session generation 同时生成 index.md、session.md、reasoning.md、system.md、tools.md 与 events.md；session.md 包含完整用户/assistant 消息，并能通过稳定的标准 Markdown 链接跳转到对应 turn、推理和工具记录。
 
 ## 14. 验收标准
 
@@ -813,4 +853,5 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 8. 单次发布失败后重跑可恢复，不产生半写入笔记或损坏 manifest。
 9. Codex rollout 与 WorkBuddy 会话 JSONL 的新增行无需 Discovery Adapter 或 Fetcher，即可增量生成会话来源笔记和关联概念。
 10. 同一会话中缺失工具结果、重复 ID、非单调时间戳、未知记录类型或文件截断均不会导致重复证据或覆盖旧 generation。
-11. 每个会话 generation 都发布为完整 bundle：主 index.md 保留完整用户/assistant 消息；reasoning.md、system.md、tools.md 与 events.md 保留对应的原始记录，并由主文档稳定引用。
+11. 每个会话 generation 都发布为完整 bundle：主 session.md 保留完整用户/assistant 消息；reasoning.md、system.md、tools.md 与 events.md 保留对应的原始记录，并由主文档稳定引用；index.md 仅作为无 frontmatter 的目录清单。
+12. 发布后的 vault 通过 OKF v0.2 合规扫描：每个非保留 Markdown 文件有 `type`，保留文件遵循其专用结构，所有 `sources` 条目具有 `resource`，生成记录使用合规 actor 和时间戳。
