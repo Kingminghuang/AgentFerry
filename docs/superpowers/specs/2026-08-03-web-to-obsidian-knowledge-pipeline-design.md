@@ -1,12 +1,12 @@
-# 网页到 Obsidian 知识管道
+# 网页与本地会话到 Obsidian 知识管道
 
 **状态：** 已确认的设计
 **日期：** 2026-08-03
-**范围：** 将公开网页 URL 与 RSS/Atom 订阅写入 Obsidian vault
+**范围：** 将公开网页 URL、RSS/Atom 订阅与本地智能体会话 JSONL 写入 Obsidian vault
 
 ## 1. 概述
 
-本系统从公开网页发现内容、抓取并标准化正文，借助 LLM 提炼为可互相链接的知识概念，再直接发布到 Obsidian vault。每一个生成的主张都必须保留来源、证据、抓取时间和生成记录；系统支持增量更新，并且不会覆盖人工维护的笔记内容。
+本系统从公开网页发现内容、抓取并标准化正文，或从本地 Codex 与 WorkBuddy 会话 JSONL 归并出对话证据，借助 LLM 提炼为可互相链接的知识概念，再直接发布到 Obsidian vault。每一个生成的主张都必须保留来源、证据、采集时间和生成记录；系统支持增量更新，并且不会覆盖人工维护的笔记内容。
 
 系统采用“契约优先”原则：每个组件可以独立部署或用任意编程语言重写。组件之间只交换带版本的 JSON 事件和 Markdown 文件，不依赖共享运行时、内部 SDK 或某种特定模型供应商。
 
@@ -14,6 +14,7 @@
 
 - 接受用户手动提交的公开 http 或 https URL。
 - 订阅 RSS 或 Atom，并定期发现新增或更新的文章 URL。
+- 从配置的本地会话根目录增量读取 Codex rollout 与 WorkBuddy conversation JSONL。
 - 生成并维护一张 Obsidian 概念笔记图谱，而非仅将每个网页保存成原文笔记。
 - 抓取与校验成功后，自动发布到正式 Obsidian vault。
 - 为每个生成的概念主张保存规范 URL、抓取时间、证据片段及置信度。
@@ -44,7 +45,10 @@ flowchart LR
   A["URL / RSS 订阅"] --> B["发现器"]
   B --> C["抓取器"]
   C --> D["正文标准化器"]
+  K["本地会话 JSONL"] --> L["会话输入适配器"]
+  L --> M["会话标准化器"]
   D --> E["证据仓库"]
+  M --> E
   E --> F["LLM 知识提炼器"]
   F --> G["概念解析器"]
   G --> H["Obsidian 发布器"]
@@ -63,6 +67,7 @@ flowchart LR
 | Discovery Adapter（发现适配器） | URL 或 RSS/Atom 响应 | DocumentDiscovered | 发现文章链接并对 feed 条目去重 |
 | Fetcher（抓取器） | 待抓取 URL | DocumentFetched | 安全抓取，执行 robots、限速与 HTTP 记录 |
 | Normalizer（标准化器） | 原始响应 | DocumentNormalized | 提取正文、标题、日期、规范 URL 与内容哈希 |
+| Session Input Adapter（会话输入适配器） | 本地 append-only JSONL 文件 | ConversationNormalized | 增量读取、归并 Codex/WorkBuddy 会话并产出证据块 |
 | Evidence Store（证据仓库） | 标准化文档 | EvidenceStored | 保存原始内容、标准化内容和稳定证据片段 |
 | Knowledge Extractor（知识提炼器） | 文档和证据 | KnowledgeExtracted | 用 LLM 生成概念、关系、摘要和证据绑定 |
 | Concept Resolver（概念解析器） | 提炼结果与现有概念图谱 | ConceptUpsertRequested | 实体消歧、合并、建链和变更判断 |
@@ -176,6 +181,84 @@ policy:
 
 发布器对每篇笔记采用独占锁串行写入，且仅在替换成功后保存 PublicationCompleted 记录。它必须保留未知 frontmatter 字段及所有受管区块外的文本。只有在概念合并导致目标 ID 变化时，才修复由系统维护的内部链接；不得改写任意人工文字。
 
+
+#### 5.1.9 会话输入适配器与会话标准化器
+
+会话输入适配器是网页 Discovery Adapter 与 Fetcher 的替代入口，不执行网页发现、网络请求、robots 检查或 URL 重定向。它只在来源注册表授权的本地根目录中读取追加式 JSONL 文件，并以文件字节偏移和行序号作为增量游标；不得按时间戳排序，因为 WorkBuddy 时间戳可能相同或局部回退。
+
+来源配置必须显式区分提供方和根路径。路径不是协议的一部分：Codex 使用配置的 sessions 根目录；WorkBuddy 也使用配置根目录，且当前 schema 文档观测到的文件布局为 projects/<workspace>/<conversation-id>.jsonl。因此部署配置而不是代码常量决定实际位置。
+
+    source_id: source:local-codex
+    kind: codex-rollout-jsonl
+    root_path: /absolute/path/to/codex/sessions
+    mode: tail
+    policy:
+      include_reasoning: false
+      include_raw_tool_output: false
+      redact_before_evidence: true
+
+    source_id: source:local-workbuddy
+    kind: workbuddy-conversation-jsonl
+    root_path: /absolute/path/to/workbuddy/conversations
+    mode: tail
+    policy:
+      include_reasoning: false
+      include_raw_tool_output: false
+      redact_before_evidence: true
+
+适配器为每个文件维护 file identity、字节偏移、最后完整行哈希、行序号和 generation。它只处理新追加的完整 JSON 行；文件截断、替换或 identity 变化时创建新的 generation，而不是覆盖旧证据。JSON 解析失败的尾行应在下一轮重试，不得丢弃或把半行当成一条会话记录。
+
+适配器将两个 schema 投影到统一记录模型：
+
+    {
+      "provider": "codex | workbuddy",
+      "session_id": "稳定会话 ID",
+      "record_key": "provider:session_id:generation:line_number",
+      "sequence": 42,
+      "occurred_at": "ISO-8601",
+      "kind": "user_message | assistant_message | tool_call | tool_result |
+               lifecycle | file_snapshot | session_metadata | unknown",
+      "turn_key": "可空的 turn 或父消息 ID",
+      "call_id": "可空的工具调用关联键",
+      "status": "completed | incomplete | unknown",
+      "content": "已脱敏文本或结构化安全投影",
+      "raw_evidence_ref": "仅证据库可读的原始行引用"
+    }
+
+Codex 映射规则：
+
+- session_meta 生成 session_metadata，并使用 payload.session_id；缺失时回退到 payload.id。
+- response_item 中的 message、agent_message 映射为消息；function_call、custom_tool_call、local_shell_call 映射为 tool_call；对应 output 映射为 tool_result。
+- event_msg 的 user_message、agent_message 与 response_item 中的重复表示必须按 turn ID、call ID、角色、规范化文本和相邻序列去重。
+- turn_context 与 world_state 只生成受策略控制的环境摘要，不把完整权限、系统指令或环境变量送入 LLM。
+- compacted 与 replacement_history 用于保留会话连续性，但其中已经出现的消息不得再次成为独立证据。
+- inter_agent_communication 映射为带 author 与 recipient 的 assistant_message 或 lifecycle 记录。
+
+WorkBuddy 映射规则：
+
+- 文件名 conversation ID 与记录 sessionId 用于构造 session ID；id 不是行级主键。
+- message 按 role 映射为 user_message 或 assistant_message。
+- function_call 与 function_call_result 通过 callId 配对；没有结果的调用以 incomplete 状态保留。
+- reasoning.rawContent 默认不进入 evidence 或 LLM；只有来源策略显式启用并脱敏后才可作为低信任的过程注释。
+- file-history-snapshot 映射为 file_snapshot 元数据，不读取备份文件内容。
+- ai-title 只更新会话展示标题。
+- providerData、rawResponse、mcpMeta 和未知字段作为 opaque JSON 存入原始证据，不默认发布或送入模型。
+
+会话标准化器按原始行顺序重建会话、轮次与工具调用对，并生成 ConversationNormalized。它的正文是经过脱敏、按时间线排列的“会话摘要输入”，而不是原始 JSONL 的简单拼接。每条可供 LLM 使用的消息或工具结果都成为稳定 evidence block，ID 形如 ev:<provider>:<session-id>:<generation>:<line-number>:<hash>。
+
+默认信任分级如下：
+
+| 记录来源 | 可提炼内容 | 默认信任 |
+| --- | --- | --- |
+| 用户消息 | 需求、偏好、决策、约束 | 用户陈述，需标明为会话来源 |
+| 工具结果 | 命令执行结果、文件状态、API 响应 | 执行证据，取决于工具与状态 |
+| assistant 最终消息 | 方案、建议、已完成声明 | 提议或结论，不自动升级为外部事实 |
+| 推理、系统指令、原始工具输出 | 默认不输入模型 | 排除，或仅存私有证据库 |
+| 文件历史快照 | 文件变更元数据 | 辅助证据，不读取备份正文 |
+
+该分级要求概念解析器把“会话中作出的决定”“工具已执行的结果”和“assistant 的建议”区别对待；assistant 自述不能在没有工具结果或用户确认的情况下变成已验证事实。
+
+
 ## 6. 互操作契约
 
 ### 6.1 通用事件信封
@@ -202,6 +285,8 @@ DocumentDiscovered 至少包含来源 ID、发现的 URL、可用时的 feed 条
 
 DocumentNormalized 至少包含稳定文档 ID、规范 URL、标题、可用时的发布日期、清洗后的 Markdown 或结构化文本、内容哈希、语言和 HTTP 溯源信息。
 
+ConversationNormalized 至少包含 provider、session ID、源文件标识、文件 generation、已处理行范围、会话标题、工作目录的脱敏表示、按原始顺序归并的消息/工具记录、内容哈希及 evidence blocks。它与 DocumentNormalized 一样写入 Evidence Store，并作为 Knowledge Extractor 的输入；两者统称为“标准化来源工件”。
+
 KnowledgeExtracted 是 LLM 提炼的唯一输出事件；其完整契约定义在下一节。
 
 ### 6.3 KnowledgeExtracted 契约
@@ -210,6 +295,11 @@ KnowledgeExtracted 是 LLM 提炼的唯一输出事件；其完整契约定义�
 
 ~~~json
 {
+  "artifact": {
+    "kind": "web_document | agent_session",
+    "provider": "可空；会话为 codex 或 workbuddy",
+    "source_id": "source:..."
+  },
   "document_id": "doc:...",
   "document_version_id": "docv:...",
   "content_hash": "sha256:...",
@@ -258,6 +348,7 @@ KnowledgeExtracted 是 LLM 提炼的唯一输出事件；其完整契约定义�
 必须满足以下不变量：
 
 - document_version_id 和 content_hash 必须与请求完全一致。
+- artifact.kind 必须与请求一致；当 artifact.kind 为 agent_session 时，document_id 表示会话工件 ID，document_version_id 表示包含 generation 的会话版本 ID，且只能引用同一会话 generation 中提供的证据块。
 - 每个摘要、主张和关系必须引用至少一个请求提供的 evidence ID。
 - local_key 仅在一次响应内唯一；永久 concept ID 只由解析器分配。
 - type 必须来自配置的类型词表，或使用 Other。
@@ -293,6 +384,10 @@ KnowledgeExtracted 是 LLM 提炼的唯一输出事件；其完整契约定义�
 
 类型词表
 <allowed concept types>
+
+工件类型与会话证据规则
+artifact_kind: <web_document | agent_session>
+若 artifact_kind 为 agent_session：用户消息可表示需求、偏好或决定；工具结果可表示执行证据；assistant 消息只可表示建议、计划或待验证结论。不得将 assistant 消息或 reasoning 视为已验证的外部事实，除非同一请求中的用户确认或工具结果明确支持它。
 
 来源元数据
 document_id: <document_id>
@@ -345,7 +440,8 @@ Vault/
     publication-manifest.json
     source-registry.json
   01 Sources/
-    <domain>/<YYYY>/<source-slug>--<short-hash>.md
+    Web/<domain>/<YYYY>/<source-slug>--<short-hash>.md
+    Sessions/<provider>/<YYYY>/<session-id>--<generation>.md
   02 Concepts/
     <type-slug>/<concept-slug>.md
   03 Indexes/
@@ -364,7 +460,7 @@ Vault/
     versions/<note-id>/<content-hash>.md
 ~~~
 
-00 System、03 Indexes、04 Reports 和 .crawler 均由管道维护。用户只应在来源和概念笔记明确标出的“人工笔记”区域写入内容。05 Attachments 是可选目录，只有策略显式允许的资源才能下载；网页引用的附件不会被默认保存。原始网页和清洗全文默认存于 vault 外的证据仓库。
+00 System、03 Indexes、04 Reports 和 .crawler 均由管道维护。用户只应在来源和概念笔记明确标出的“人工笔记”区域写入内容。05 Attachments 是可选目录，只有策略显式允许的资源才能下载；网页引用的附件不会被默认保存。原始网页、清洗全文和原始会话 JSONL 默认存于 vault 外的证据仓库。
 
 ### 7.2 标识符、文件名与链接
 
@@ -427,7 +523,61 @@ managed_by: web-knowledge-pipeline
 
 来源笔记正文默认不得保存全文。证据引文的最大长度由策略配置，并始终保留证据 block ID。
 
-### 7.4 概念笔记完整最小格式
++
+### 7.4 会话来源笔记完整最小格式
+
+一个 session generation 对应一篇会话来源笔记；追加新 JSONL 行时更新同一笔记的受管区块并递增 session_generation。会话笔记与网页来源笔记同样是概念主张的证据源，但其语义是“会话记录”，而不是外部网页事实。
+
+~~~markdown
+---
+id: source:session:codex:019-example
+kind: agent-session
+provider: codex
+session_id: 019-example
+session_generation: 3
+title: 会话展示标题
+source_file_ref: evidence://codex/019-example/generation-3
+cwd_display: Workspace/AgentFerry
+started_at: 2026-08-03T10:00:00Z
+captured_at: 2026-08-03T12:00:00Z
+line_range: [1, 842]
+content_hash: sha256:...
+status: active
+ingestion:
+  schema: codex-rollout-legacy
+  reasoning_included: false
+  raw_tool_output_included: false
+  redaction_profile: default
+generated:
+  by: web-knowledge-pipeline
+  at: 2026-08-03T12:01:00Z
+  prompt_version: knowledge-extraction/1.0
+managed_by: web-knowledge-pipeline
+---
+
+# 会话摘要
+<!-- AGENT:BEGIN session-summary -->
+由证据支持的任务、决定、执行结果和待办摘要。
+<!-- AGENT:END session-summary -->
+
+# 时间线证据
+<!-- AGENT:BEGIN session-evidence -->
+- 用户决定：…… [[...#^ev-codex-019-42|证据]]
+- 工具结果：…… [[...#^ev-codex-019-57|证据]]
+<!-- AGENT:END session-evidence -->
+
+# 提取出的概念
+<!-- AGENT:BEGIN extracted-concepts -->
+- [[02 Concepts/decision/architecture-choice]]
+<!-- AGENT:END extracted-concepts -->
+
+# 人工笔记
+此处由用户维护。
+~~~
+
+不得默认发布 reasoning、系统指令、完整工具输出、base instructions、world state 或 providerData 的原始内容。source_file_ref 是证据仓库引用，不是本地绝对路径；cwd_display 必须经过路径脱敏策略处理。
+
+### 7.5 概念笔记完整最小格式
 
 只有在解析器分配稳定 concept ID 后，才能发布概念笔记。必填 frontmatter 为：id、type、title、status、created_at、updated_at、至少一条带文档版本与 evidence ID 的 sources、generated 和 managed_by。
 
@@ -482,7 +632,7 @@ managed_by: web-knowledge-pipeline
 
 摘要、关键主张、关联概念和来源是必需的受管区块。未知 frontmatter 字段、用户自建标题及所有受管标记之外的文字，必须原样保留。
 
-### 7.5 索引与运行报告
+### 7.6 索引与运行报告
 
 索引是衍生物：每次成功发布后，根据 publication-manifest.json 重新生成；它们只包含链接，永远不是事实来源。每份运行报告至少包含 trace ID、来源、发现数量、抓取结果、文档版本、模型调用、概念 upsert、发布路径、warning 和冲突。
 
@@ -502,7 +652,16 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 
 用户给出的 Omdia RSS 是一个发现来源示例。系统逐篇处理其中的文章 URL；除 feed 配置外，架构不依赖 Omdia 特有的解析逻辑。
 
-### 8.3 增量更新
++
+### 8.3 本地会话 JSONL
+
+会话来源以文件追加而非网页发现作为更新触发。系统可以通过文件系统通知唤醒，也可以按固定周期扫描已登记根目录；两种方式都只读取控制库游标之后的完整行。
+
+会话版本的变化由 file identity、generation、行序号和归并后内容哈希共同决定，而非单独依赖 timestamp、id 或 sessionId。WorkBuddy 记录的时间戳不保证单调，且 id 可以在多条记录之间复用；Codex legacy rollout 可能同时保存 response_item 与 event_msg 的重复消息。因此归并与去重必须保留原始行序，并使用 provider 规则处理。
+
+当会话 JSONL 追加新行时，系统只重新标准化受影响的尾部 turn，并把新的 evidence block 合并进现有 session generation。文件被截断或替换时，保留旧 generation 并新建 generation；绝不把新文件内容混入原会话证据版本。
+
+### 8.4 增量更新
 
 - 若标准化内容哈希未变化，跳过后续 LLM 提炼。
 - 若正文变化，计算版本差异并重新提炼。
@@ -510,7 +669,7 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - 来源不可访问时，将来源和受影响概念标为 stale；不自动删除既有笔记。
 - 每次发布都记录输入哈希和前一版本，以便回滚。
 
-### 8.4 冲突与人工编辑
+### 8.5 冲突与人工编辑
 
 发布器仅拥有 frontmatter 中明确受管的字段和 AGENT:BEGIN / AGENT:END 区块。人工笔记区块及任何未知字段不可被自动覆盖。
 
@@ -525,6 +684,8 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - 低置信度或 Schema 无效的输出只进入运行报告；不得更新现有概念。
 - 提炼失败但抓取成功时，可发布来源笔记的基本元数据和失败状态，不发布未经证据验证的摘要或概念。
 - 记录模型标识、prompt version、输入文档版本和完成时间，以支持重放和审计。
+- 会话来源中，assistant 消息只能生成“提议”或“待验证结论”；只有用户确认或工具结果支持时才能提升为决策或执行事实。
+- 会话输入在进入 Evidence Store 和 LLM 前执行脱敏：令牌、密码、私钥、认证头、cookie、环境变量值和绝对主目录路径默认移除或替换为占位符。
 
 ## 10. 发布事务
 
@@ -548,6 +709,7 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - 默认发布元数据、短引文和摘要，不发布文章全文。
 - 私有证据仓库的全文保留期限必须按站点条款、robots 策略和用户配置执行。
 - 来源策略应保留 user agent、联系信息和禁止抓取域名列表，便于合规审计。
+- 会话来源是高敏感本地数据：默认排除 reasoning、系统指令、base instructions、完整工具输出、world state、providerData.rawResponse 和 mcpMeta；即使策略允许私有保留，也不得默认发布到 vault 或发送给 LLM。
 
 ## 12. 失败处理
 
@@ -572,6 +734,8 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - **安全测试：** 尝试访问私网 URL、重定向链、恶意文件、超大正文和提示词注入文本均被拒绝或隔离。
 - **端到端测试：** 一条 RSS 新条目完整生成来源笔记、关联概念笔记、索引和运行报告。
 - **跨语言契约测试：** 同一套事件 fixture 必须能被不同语言的组件实现消费和产出。
+- **会话归并测试：** 使用 Codex legacy rollout 与 WorkBuddy JSONL fixture，验证按行序读取、call ID 配对、重复消息去重、截断 generation 与未知记录保留。
+- **会话隐私测试：** 含密钥、绝对路径、系统指令、reasoning 和原始工具输出的 fixture 在 Evidence Store 投影、LLM 请求与 vault 笔记中均符合脱敏与排除策略。
 
 ## 14. 验收标准
 
@@ -583,3 +747,5 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 6. 每条发布的概念事实主张都能追溯至来源 URL、文档版本和证据片段。
 7. 含提示词注入文本的网页不能改变抓取策略、模型权限或 vault 文件范围。
 8. 单次发布失败后重跑可恢复，不产生半写入笔记或损坏 manifest。
+9. Codex rollout 与 WorkBuddy 会话 JSONL 的新增行无需 Discovery Adapter 或 Fetcher，即可增量生成会话来源笔记和关联概念。
+10. 同一会话中缺失工具结果、重复 ID、非单调时间戳、未知记录类型或文件截断均不会导致重复证据或覆盖旧 generation。
