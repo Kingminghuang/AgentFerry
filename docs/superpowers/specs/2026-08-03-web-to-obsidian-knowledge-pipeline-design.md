@@ -196,8 +196,7 @@ policy:
       include_reasoning: true
       include_system_context: true
       include_raw_tool_output: true
-      redact_before_evidence: true
-      publish_mode: full_redacted_bundle
+      publish_mode: full_session_bundle
 
     source_id: source:local-workbuddy
     kind: workbuddy-conversation-jsonl
@@ -207,8 +206,7 @@ policy:
       include_reasoning: true
       include_system_context: true
       include_raw_tool_output: true
-      redact_before_evidence: true
-      publish_mode: full_redacted_bundle
+      publish_mode: full_session_bundle
 
 适配器为每个文件维护 file identity、字节偏移、最后完整行哈希、行序号和 generation。它只处理新追加的完整 JSON 行；文件截断、替换或 identity 变化时创建新的 generation，而不是覆盖旧证据。JSON 解析失败的尾行应在下一轮重试，不得丢弃或把半行当成一条会话记录。
 
@@ -226,8 +224,8 @@ policy:
       "turn_key": "可空的 turn 或父消息 ID",
       "call_id": "可空的工具调用关联键",
       "status": "completed | incomplete | unknown",
-      "content": "已脱敏、可发布的文本或结构化投影",
-      "raw_evidence_ref": "私有原始行引用"
+      "content": "原始文本或结构化投影",
+      "raw_evidence_ref": "原始 JSONL 行引用"
     }
 
 Codex 映射规则：
@@ -235,7 +233,7 @@ Codex 映射规则：
 - session_meta 生成 session_metadata，并使用 payload.session_id；缺失时回退到 payload.id。
 - response_item 中的 message、agent_message 映射为消息；function_call、custom_tool_call、local_shell_call 映射为 tool_call；对应 output 映射为 tool_result。
 - event_msg 的 user_message、agent_message 与 response_item 中的重复表示必须按 turn ID、call ID、角色、规范化文本和相邻序列去重。
-- session_meta 的 base_instructions、turn_context 与 world_state 映射为 system_context；完整结构经过递归脱敏后写入 system.md，并作为带来源角色的上下文证据提供给 LLM。
+- session_meta 的 base_instructions、turn_context 与 world_state 映射为 system_context；完整结构写入 system.md，并作为带来源角色的上下文证据提供给 LLM。
 - compacted 与 replacement_history 用于保留会话连续性，但其中已经出现的消息不得再次成为独立证据。
 - inter_agent_communication 映射为带 author 与 recipient 的 assistant_message 或 lifecycle 记录。
 
@@ -244,12 +242,12 @@ WorkBuddy 映射规则：
 - 文件名 conversation ID 与记录 sessionId 用于构造 session ID；id 不是行级主键。
 - message 按 role 映射为 user_message 或 assistant_message。
 - function_call 与 function_call_result 通过 callId 配对；没有结果的调用以 incomplete 状态保留。
-- reasoning.rawContent 映射为 reasoning；脱敏后写入 reasoning.md，并作为低信任的过程证据提供给 LLM。
+- reasoning.rawContent 映射为 reasoning；原样写入 reasoning.md，并作为低信任的过程证据提供给 LLM。
 - file-history-snapshot 映射为 file_snapshot 元数据，不读取备份文件内容。
 - ai-title 只更新会话展示标题。
-- providerData、rawResponse、mcpMeta 和未知字段保留为结构化 opaque JSON；脱敏并按大小策略截分后写入对应附属文档，同时保留私有原始证据引用。
+- providerData、rawResponse、mcpMeta 和未知字段保留为结构化 opaque JSON；按大小策略写入对应附属文档或 assets，并保留原始 JSONL 行引用。
 
-会话标准化器按原始行顺序重建会话、轮次与工具调用对，并生成 ConversationNormalized。它产出一组经过脱敏、可完整还原会话结构的记录：用户/assistant 消息写入主文档；reasoning、system context、工具调用/结果与其他事件分别写入附属文档。每条记录都成为稳定 evidence block，ID 形如 ev:<provider>:<session-id>:<generation>:<line-number>:<hash>。
+会话标准化器按原始行顺序重建会话、轮次与工具调用对，并生成 ConversationNormalized。它产出一组可完整还原会话结构的原始记录：用户/assistant 消息写入主文档；reasoning、system context、工具调用/结果与其他事件分别写入附属文档。每条记录都成为稳定 evidence block，ID 形如 ev:<provider>:<session-id>:<generation>:<line-number>:<hash>。
 
 默认信任分级如下：
 
@@ -280,15 +278,15 @@ WorkBuddy 映射规则：
 
 目录名固定为 <session-id>_<session-title>。其中 session ID 是稳定主键；session title 经过 slug 规范化，仅用于可读性。首次发布后目录不因标题变化而自动改名；若标题为空，使用 untitled。generation 只保存在 index.md frontmatter、publication manifest 与 evidence ID 中，作为文件重写/截断时的内部版本元数据。
 
-index.md 必须按 JSONL 原始行序完整保存 user_message 与 assistant_message 的已脱敏内容，不得以摘要替代消息正文。每个 turn 具有稳定锚点，并紧随对相关附属记录的链接：
+index.md 必须按 JSONL 原始行序完整保存 user_message 与 assistant_message 的原始内容，不得以摘要替代消息正文。每个 turn 具有稳定锚点，并紧随对相关附属记录的链接：
 
     ## Turn <turn-key> ^turn-<stable-id>
 
     ### 用户
-    <完整已脱敏消息正文> ^msg-<stable-id>
+    <完整用户消息正文> ^msg-<stable-id>
 
     ### 助手
-    <完整已脱敏消息正文> ^msg-<stable-id>
+    <完整 assistant 消息正文> ^msg-<stable-id>
 
     关联记录：
     - [[reasoning#^reasoning-<stable-id>|本轮推理]]
@@ -297,7 +295,7 @@ index.md 必须按 JSONL 原始行序完整保存 user_message 与 assistant_mes
 
 reasoning.md、system.md、tools.md 和 events.md 必须保留各自记录的结构和 block ID。工具记录包含名称、状态、原始参数字符串、可解析时的 JSON 参数、结果、关联 call ID、时间和 provider 扩展字段。工具输出超过配置的单块上限时，正文保存前 N 个字符、完整内容以受管附件或分片 Markdown 保存，并在 tools.md 中链接；不得静默丢失。
 
-所有内容均先执行递归脱敏，再写入 bundle。脱敏是替换敏感值而非删除整类记录：例如凭据替换为 <REDACTED:secret>，绝对主目录替换为 <HOME>。只有无法安全表示的二进制数据或超过附件策略的内容可以省略，但必须在原位置写明 omission 原因、哈希与私有证据引用。
+所有会话记录均按原始内容物化到 bundle。无法以内嵌 Markdown 表示的二进制数据和超过单文件上限的内容必须写入 assets 或受管分片 Markdown，并在原位置写入链接、哈希与原始 JSONL 行引用；不得因内容类别而省略。
 
 会话 bundle 主文档可含自动生成的概览，但概览是附加区块，不能取代完整消息：
 
@@ -339,7 +337,7 @@ DocumentDiscovered 至少包含来源 ID、发现的 URL、可用时的 feed 条
 
 DocumentNormalized 至少包含稳定文档 ID、规范 URL、标题、可用时的发布日期、清洗后的 Markdown 或结构化文本、内容哈希、语言和 HTTP 溯源信息。
 
-ConversationNormalized 至少包含 provider、session ID、源文件标识、文件 generation、已处理行范围、会话标题、工作目录的脱敏表示、按原始顺序归并的消息/工具记录、内容哈希及 evidence blocks。它与 DocumentNormalized 一样写入 Evidence Store，并作为 Knowledge Extractor 的输入；两者统称为“标准化来源工件”。
+ConversationNormalized 至少包含 provider、session ID、源文件标识、文件 generation、已处理行范围、会话标题、工作目录、按原始顺序归并的消息/工具记录、内容哈希及 evidence blocks。它与 DocumentNormalized 一样写入 Evidence Store，并作为 Knowledge Extractor 的输入；两者统称为“标准化来源工件”。
 
 KnowledgeExtracted 是 LLM 提炼的唯一输出事件；其完整契约定义在下一节。
 
@@ -608,7 +606,6 @@ ingestion:
   reasoning_included: true
   system_context_included: true
   raw_tool_output_included: true
-  redaction_profile: default
 generated:
   by: web-knowledge-pipeline
   at: 2026-08-03T12:01:00Z
@@ -625,10 +622,10 @@ managed_by: web-knowledge-pipeline
 ## Turn 019-turn-1 ^turn-019-turn-1
 
 ### 用户
-完整、已脱敏的用户消息。 ^msg-019-41
+完整用户消息。 ^msg-019-41
 
 ### 助手
-完整、已脱敏的 assistant 消息。 ^msg-019-42
+完整 assistant 消息。 ^msg-019-42
 
 关联记录：
 - [[reasoning#^reasoning-019-42|本轮推理]]
@@ -644,7 +641,7 @@ managed_by: web-knowledge-pipeline
 此处由用户维护。
 ~~~
 
-reasoning.md、system.md、tools.md 和 events.md 是该主笔记的必备附属文件，并分别保存推理、系统/运行上下文、工具调用/结果和其他会话事件的完整脱敏表示。source_file_ref 是证据仓库引用，不是本地绝对路径；cwd_display 必须经过路径脱敏策略处理。
+reasoning.md、system.md、tools.md 和 events.md 是该主笔记的必备附属文件，并分别保存推理、系统/运行上下文、工具调用/结果和其他会话事件的完整原始表示。source_file_ref 是证据仓库引用，不是本地绝对路径；cwd_display 保存原始工作目录。
 
 ### 7.5 概念笔记完整最小格式
 
@@ -753,7 +750,6 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - 提炼失败但抓取成功时，可发布来源笔记的基本元数据和失败状态，不发布未经证据验证的摘要或概念。
 - 记录模型标识、prompt version、输入文档版本和完成时间，以支持重放和审计。
 - 会话来源中，assistant 消息只能生成“提议”或“待验证结论”；只有用户确认或工具结果支持时才能提升为决策或执行事实。
-- 会话输入在进入 Evidence Store 和 LLM 前执行脱敏：令牌、密码、私钥、认证头、cookie、环境变量值和绝对主目录路径默认移除或替换为占位符。
 
 ## 10. 发布事务
 
@@ -773,11 +769,10 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - 仅允许 http 和 https。
 - 拒绝 localhost、回环、私有地址、链路本地地址和云元数据地址；每次重定向后再次检查。
 - 默认遵守 robots.txt，并执行每域名并发数、速率、页面数、链接深度和正文大小限制。
-- 凭据只能来自部署环境的 secrets，绝不写入 vault、事件或运行报告。
 - 默认发布元数据、短引文和摘要，不发布文章全文。
 - 私有证据仓库的全文保留期限必须按站点条款、robots 策略和用户配置执行。
 - 来源策略应保留 user agent、联系信息和禁止抓取域名列表，便于合规审计。
-- 会话来源是高敏感本地数据：reasoning、系统指令、base instructions、完整工具输出、world state、providerData.rawResponse 和 mcpMeta 默认经过递归脱敏后保留、发布到会话 bundle，并作为带来源角色的模型输入。脱敏失败或附件策略拒绝时，保留 omission 说明、哈希与私有证据引用，而非静默删除记录。
+- 会话来源中的 reasoning、系统指令、base instructions、完整工具输出、world state、providerData.rawResponse 和 mcpMeta 默认原样保留、发布到会话 bundle，并作为带来源角色的模型输入。
 
 ## 12. 失败处理
 
@@ -803,7 +798,7 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - **端到端测试：** 一条 RSS 新条目完整生成来源笔记、关联概念笔记、索引和运行报告。
 - **跨语言契约测试：** 同一套事件 fixture 必须能被不同语言的组件实现消费和产出。
 - **会话归并测试：** 使用 Codex legacy rollout 与 WorkBuddy JSONL fixture，验证按行序读取、call ID 配对、重复消息去重、截断 generation 与未知记录保留。
-- **会话隐私测试：** 含密钥、绝对路径、系统指令、reasoning 和原始工具输出的 fixture 在 Evidence Store 投影、LLM 请求与 vault 笔记中均符合脱敏与完整物化策略。
+- **会话完整性测试：** 含密钥、绝对路径、系统指令、reasoning 和原始工具输出的 fixture 在 Evidence Store、LLM 请求与 vault 笔记中保持一致的完整物化。
 - **会话 bundle 测试：** 验证每个 session generation 同时生成 index.md、reasoning.md、system.md、tools.md 与 events.md；index.md 包含完整用户/assistant 消息，并能通过稳定链接跳转到对应 turn、推理和工具记录。
 
 ## 14. 验收标准
@@ -818,4 +813,4 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 8. 单次发布失败后重跑可恢复，不产生半写入笔记或损坏 manifest。
 9. Codex rollout 与 WorkBuddy 会话 JSONL 的新增行无需 Discovery Adapter 或 Fetcher，即可增量生成会话来源笔记和关联概念。
 10. 同一会话中缺失工具结果、重复 ID、非单调时间戳、未知记录类型或文件截断均不会导致重复证据或覆盖旧 generation。
-11. 每个会话 generation 都发布为完整 bundle：主 index.md 保留完整、已脱敏的用户/assistant 消息；reasoning.md、system.md、tools.md 与 events.md 保留对应的脱敏记录，并由主文档稳定引用。
+11. 每个会话 generation 都发布为完整 bundle：主 index.md 保留完整用户/assistant 消息；reasoning.md、system.md、tools.md 与 events.md 保留对应的原始记录，并由主文档稳定引用。
