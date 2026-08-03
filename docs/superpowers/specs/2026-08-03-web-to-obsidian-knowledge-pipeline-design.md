@@ -270,13 +270,15 @@ WorkBuddy 映射规则：
 
 每个会话 generation 发布为一个 Obsidian 目录 bundle，而不是一篇摘要笔记。目录中的文件共同构成同一来源工件，必须在一次发布事务中一起更新：
 
-    01 Sources/Sessions/<provider>/<YYYY>/<session-id>--g<generation>/
+    01 Sources/Sessions/<provider>/<YYYY>/<session-id>_<session-title>/
       index.md       # 主文档：完整 user 与 assistant 消息
       reasoning.md   # 所有 reasoning 记录，按 turn 分节
       system.md      # session_meta、system/base instructions、turn_context、world_state
       tools.md       # 工具调用、参数、结果，按 call ID 配对
       events.md      # lifecycle、多智能体、压缩、文件快照、未知记录
       assets/        # 过大且可安全发布的文本或二进制附件
+
+目录名固定为 <session-id>_<session-title>。其中 session ID 是稳定主键；session title 经过 slug 规范化，仅用于可读性。首次发布后目录不因标题变化而自动改名；若标题为空，使用 untitled。generation 只保存在 index.md frontmatter、publication manifest 与 evidence ID 中，作为文件重写/截断时的内部版本元数据。
 
 index.md 必须按 JSONL 原始行序完整保存 user_message 与 assistant_message 的已脱敏内容，不得以摘要替代消息正文。每个 turn 具有稳定锚点，并紧随对相关附属记录的链接：
 
@@ -493,7 +495,7 @@ Vault/
     source-registry.json
   01 Sources/
     Web/<domain>/<YYYY>/<source-slug>--<short-hash>.md
-    Sessions/<provider>/<YYYY>/<session-id>--g<generation>/
+    Sessions/<provider>/<YYYY>/<session-id>_<session-title>/
       index.md
       reasoning.md
       system.md
