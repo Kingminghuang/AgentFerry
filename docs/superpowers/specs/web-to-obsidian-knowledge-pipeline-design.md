@@ -85,8 +85,8 @@ flowchart LR
 
 | 原始来源 | Producer 契约 | 最终 OKF 物化契约 |
 | --- | --- | --- |
-| 公开网页、RSS、Atom | [网页到 OKF Producer 规范](2026-08-07-web-to-okf-producer.md) | [网页来源 Vault 目录与笔记规范](2026-08-07-web-vault-layout.md) |
-| Codex rollout、WorkBuddy JSONL | [本地会话到 OKF Producer 规范](2026-08-07-session-to-okf-producer.md) | [本地会话 Vault 目录与 Bundle 规范](2026-08-07-session-vault-layout.md) |
+| 公开网页、RSS、Atom | [网页到 OKF Producer 规范](web-to-okf-producer.md) | [网页来源 Vault 目录与笔记规范](web-vault-layout.md) |
+| Codex rollout、WorkBuddy JSONL | [本地会话到 OKF Producer 规范](session-to-okf-producer.md) | [本地会话 Vault 目录与 Bundle 规范](session-vault-layout.md) |
 
 producer 契约规定原始输入、身份与版本、归并/标准化、evidence block、增量与失败处理；layout 契约仅规定已验证标准化工件的最终 OKF 文件表示。后续修改来源生产行为必须先修改对应 producer 契约。
 
@@ -217,14 +217,15 @@ policy:
       include_raw_tool_output: true
       publish_mode: full_session_bundle
 
-适配器为每个文件维护 file identity、字节偏移、最后完整行哈希、行序号和 generation。它只处理新追加的完整 JSON 行；文件截断、替换或 identity 变化时创建新的 generation，而不是覆盖旧证据。JSON 解析失败的尾行应在下一轮重试，不得丢弃或把半行当成一条会话记录。
+适配器为每个文件维护 file identity、字节偏移、最后完整行哈希和行序号。它只处理新追加的完整 JSON 行；file identity 只用于内部检测替换，不进入公开记录身份或 Vault 路径。文件截断、替换或 identity 变化时在同一稳定 session 目录重建当前内容，并由 Evidence Store 按新的 `document_version_id` 保存版本。JSON 解析失败的尾行应在下一轮重试，不得丢弃或把半行当成一条会话记录。
 
 适配器将两个 schema 投影到统一记录模型：
 
     {
       "provider": "codex | workbuddy",
       "session_id": "稳定会话 ID",
-      "record_key": "provider:session_id:generation:line_number",
+      "record_key": "provider:session_id:line_number:record_hash",
+      "record_hash": "sha256:<hex>",
       "sequence": 42,
       "occurred_at": "ISO-8601",
       "kind": "user_message | assistant_message | reasoning | system_context |
@@ -256,7 +257,7 @@ WorkBuddy 映射规则：
 - ai-title 只更新会话展示标题。
 - providerData、rawResponse、mcpMeta 和未知字段保留为结构化 opaque JSON；按大小策略写入对应附属文档或 assets，并保留原始 JSONL 行引用。
 
-会话标准化器按原始行顺序重建会话、轮次与工具调用对，并生成 ConversationNormalized。它产出一组可完整还原会话结构的原始记录：用户/assistant 消息写入主文档；reasoning、system context、工具调用/结果与其他事件分别写入附属文档。每条记录都成为稳定 evidence block，ID 形如 `ev:<provider>:<session-id>:<generation>:<line-number>:<hash>`。
+会话标准化器按原始行顺序重建会话、轮次与工具调用对，并生成 ConversationNormalized。它产出一组可完整还原会话结构的原始记录：用户/assistant 消息写入主文档；reasoning、system context、工具调用/结果与其他事件分别写入附属文档。每条记录都成为稳定 evidence block，ID 形如 `ev:<provider>:<session-id>:<line-number>:<record-hash>`；相同 session、行号和记录 hash 再次出现时复用相同 ID。
 
 默认信任分级如下：
 
@@ -274,9 +275,9 @@ WorkBuddy 映射规则：
 
 #### 5.1.10 会话 bundle 物化规则
 
-会话来源必须发布为完整的、按 generation 隔离的 Obsidian directory bundle，而不是摘要笔记。bundle 的目录、必备文件、frontmatter、锚点、原始内容物化和追加/截断规则由 [本地会话 Vault 目录与 Bundle 规范](2026-08-07-session-vault-layout.md) 定义。
+会话来源必须发布为完整的、按稳定 session ID 定位的 Obsidian directory bundle，而不是摘要笔记。bundle 的目录、必备文件、frontmatter、锚点、原始内容物化、日志和追加/截断规则由 [本地会话 Vault 目录与 Bundle 规范](session-vault-layout.md) 定义。
 
-本组件只承担从 JSONL 归并出完整记录、稳定 evidence block 和 generation；发布器必须将同一 generation 的 bundle 原子发布。新增 JSONL 行不得重排同 generation 的既有记录；文件截断、替换或 identity 变化必须创建新 generation，且不能覆盖旧 generation 证据。
+本组件只承担从 JSONL 归并出完整记录、稳定 evidence block 和 `document_version_id`；发布器必须将当前 session bundle、session-local `index.md`、`log.md` 和 provider `index.md` 作为一个逻辑发布事务发布。新增 JSONL 行不得重排既有记录；文件截断、替换或 identity 变化必须在原目录重建当前 bundle，并由 Evidence Store 保留旧版本。
 
 ## 6. 互操作契约
 
@@ -306,7 +307,7 @@ DocumentDiscovered 至少包含来源 ID、发现的 URL、可用时的 feed 条
 
 DocumentNormalized 至少包含稳定文档 ID、规范 URL、标题、可用时的发布日期、清洗后的 Markdown 或结构化文本、内容哈希、语言和 HTTP 溯源信息。
 
-ConversationNormalized 至少包含 provider、session ID、源文件标识、文件 generation、已处理行范围、会话标题、工作目录、按原始顺序归并的消息/工具记录、内容哈希及 evidence blocks。它与 DocumentNormalized 一样写入 Evidence Store，并作为 Knowledge Extractor 的输入；两者统称为“标准化来源工件”。
+ConversationNormalized 至少包含 provider、session ID、源文件标识、已处理行范围、会话标题、工作目录、按原始顺序归并的消息/工具记录、内容哈希、`document_version_id` 及 evidence blocks。它与 DocumentNormalized 一样写入 Evidence Store，并作为 Knowledge Extractor 的输入；两者统称为“标准化来源工件”。
 
 KnowledgeExtracted 是 LLM 提炼的唯一输出事件；其完整契约定义在下一节。
 
@@ -369,7 +370,7 @@ KnowledgeExtracted 是 LLM 提炼的唯一输出事件；其完整契约定义�
 必须满足以下不变量：
 
 - document_version_id 和 content_hash 必须与请求完全一致。
-- artifact.kind 必须与请求一致；当 artifact.kind 为 agent_session 时，document_id 表示会话工件 ID，document_version_id 表示包含 generation 的会话版本 ID，且只能引用同一会话 generation 中提供的证据块。
+- artifact.kind 必须与请求一致；当 artifact.kind 为 agent_session 时，document_id 表示稳定会话工件 ID，document_version_id 表示当前会话源版本，且只能引用该版本请求中提供的证据块。
 - 每个摘要、主张和关系必须引用至少一个请求提供的 evidence ID。
 - local_key 仅在一次响应内唯一；永久 concept ID 只由解析器分配。
 - type 必须来自配置的类型词表，或使用 Other。
@@ -475,11 +476,16 @@ Vault/
     publication-manifest.json
     source-registry.json
   01 Sources/
-    Web/<domain>/<YYYY>/<source-slug>--<short-hash>.md
-    Sessions/<provider>/<YYYY>/<session-id>_<session-title>/
-      index.md                # 会话目录清单，不含 frontmatter
-      generations/<generation>/
-        index.md              # generation bundle 清单，不含 frontmatter
+    Web/<domain>/<stable-source-key>/
+      index.md                # source bundle 清单，不含 frontmatter
+      source.md               # type: Web Article
+      log.md                  # source 变更历史，不含 frontmatter
+      assets/
+    Sessions/<provider>/
+      index.md                # session ID 与标题索引，不含 frontmatter
+      <session-id>/
+        index.md              # session bundle 清单，不含 frontmatter
+        log.md                # session 变更历史，不含 frontmatter
         session.md            # type: Agent Session
         reasoning.md
         system.md
@@ -495,8 +501,6 @@ Vault/
   04 Reports/
     crawl-runs/<YYYY-MM-DD>--<trace-id>.md
     conflicts/<timestamp>--<note-id>.md
-  05 Attachments/
-    <source-id>/<permitted asset files>
   .crawler/
     checkpoints.json
     locks/
@@ -504,9 +508,9 @@ Vault/
     versions/<note-id>/<content-hash>.json
 ```
 
-00 System、03 Indexes、04 Reports 和 .crawler 均由管道维护。00 System 中的 Markdown 使用 `type: Pipeline Configuration`、`type: Concept Type Registry` 等类型；03 Indexes 使用 `type: Generated Index`；04 Reports 使用 `type: Run Report` 或 `type: Conflict Report`。因此它们在 OKF 中仍是概念文档，而不是未结构化旁路文件。`.crawler/` 只保存 JSON、锁和临时文件，不写入 Markdown。用户只应在来源和概念笔记明确标出的“人工笔记”区域写入内容。05 Attachments 是可选目录，只有策略显式允许的资源才能下载；网页引用的附件不会被默认保存。原始网页、清洗全文和原始会话 JSONL 默认存于 vault 外的证据仓库。
+00 System、03 Indexes、04 Reports 和 .crawler 均由管道维护。00 System 中的 Markdown 使用 `type: Pipeline Configuration`、`type: Concept Type Registry` 等类型；03 Indexes 使用 `type: Generated Index`；04 Reports 使用 `type: Run Report` 或 `type: Conflict Report`。因此它们在 OKF 中仍是概念文档，而不是未结构化旁路文件。`.crawler/` 只保存 JSON、锁和临时文件，不写入 Markdown。用户只应在来源和概念笔记明确标出的“人工笔记”区域写入内容。来源附件仅在策略显式允许时写入各自 source bundle 的 `assets/`，网页引用的附件不会被默认保存。原始网页、清洗全文和原始会话 JSONL 默认存于 vault 外的证据仓库。
 
-`01 Sources/Web/` 的路径、网页来源笔记与附件规则由 [网页来源 Vault 目录与笔记规范](2026-08-07-web-vault-layout.md) 定义。`01 Sources/Sessions/` 的 generation 路径、bundle 文件及会话内容物化规则由 [本地会话 Vault 目录与 Bundle 规范](2026-08-07-session-vault-layout.md) 定义。
+`01 Sources/Web/` 的路径、网页来源 bundle、日志与附件规则由 [网页来源 Vault 目录与笔记规范](web-vault-layout.md) 定义。`01 Sources/Sessions/` 的稳定 session bundle、日志、文件及会话内容物化规则由 [本地会话 Vault 目录与 Bundle 规范](session-vault-layout.md) 定义。
 
 ### 7.3 标识符、文件名与链接
 
@@ -514,18 +518,20 @@ Vault/
 
 slug 采用 Unicode 规范化、大小写折叠、标点折叠和空白压缩，最长 80 字符。出现路径分隔符、纯点路径段或保留文件名字符时必须拒绝发布。publication-manifest.json 是 ID 到文件路径的权威映射，Obsidian 显示名称不是标识符。
 
+网页 source bundle 的 `<stable-source-key>` 是由稳定 `source_id` 经过同一套路径安全 slug 规则导出的目录名；它不能由文章标题、显示名称或当前正文哈希单独决定。会话 bundle 的目录名直接使用经过路径安全校验的稳定 `session_id`。
+
 每个来源证据片段都有 Obsidian block ID，例如 `^ev-a1b2c3`。概念主张通过标准 Markdown 链接指向该 block，例如：
 
 ```text
-[证据](</01 Sources/Web/example/2026/example--a1b2.md#^ev-a1b2c3>)
+[证据](</01 Sources/Web/example/source-example-a1b2c3/source.md#^ev-a1b2c3>)
 ```
 
 ### 7.4 来源工件的 Vault 物化
 
 网页来源与会话来源均是概念主张的证据源，但网页只代表经抓取的公开内容，会话代表具有来源角色和信任分级的本地记录。两者的具体目录与 Markdown 合同独立维护：
 
-- [网页来源 Vault 目录与笔记规范](2026-08-07-web-vault-layout.md) 定义 `01 Sources/Web/` 下的路径、网页来源笔记、短引文、附件和版本更新。
-- [本地会话 Vault 目录与 Bundle 规范](2026-08-07-session-vault-layout.md) 定义 `01 Sources/Sessions/` 下的 generation 隔离、完整会话 bundle、附属文档、原始内容与增量发布。
+- [网页来源 Vault 目录与笔记规范](web-vault-layout.md) 定义 `01 Sources/Web/` 下的稳定 source bundle、网页来源笔记、短引文、附件、日志和版本更新。
+- [本地会话 Vault 目录与 Bundle 规范](session-vault-layout.md) 定义 `01 Sources/Sessions/` 下的稳定 session bundle、完整会话文件、日志、原始记录与增量发布。
 
 无论来源类型，生成的概念笔记只能通过标准 Markdown 链接引用其证据 block；发布器仅更新自身拥有的 frontmatter 字段和 AGENT 受管区块。
 
@@ -591,13 +597,13 @@ managed_by: web-knowledge-pipeline
 
 ### 7.6 索引与运行报告
 
-索引是衍生物：每次成功发布后，根据 publication-manifest.json 重新生成；它们只包含链接，永远不是事实来源。每个 `concepts-by-*.md` 是 `type: Generated Index` 的概念文档；若使用 `index.md` 作为目录索引，则该文件必须遵守 §7.1 的保留文件规则。每份运行报告是 `type: Run Report` 或 `type: Conflict Report` 的概念文档，至少包含 trace ID、来源、发现数量、抓取结果、文档版本、模型调用、概念 upsert、发布路径、warning 和冲突。
+索引是衍生物：每次成功发布后，根据 publication-manifest.json 重新生成；它们只包含链接，永远不是事实来源。每个 `concepts-by-*.md` 是 `type: Generated Index` 的概念文档；`01 Sources/Sessions/<provider>/index.md` 是无 frontmatter 的保留目录索引，负责将当前 session 标题映射到稳定 session ID 及其 `session.md`，并与相应 session bundle 在同一逻辑发布事务中更新。若使用其他 `index.md` 作为目录索引，则该文件必须遵守 §7.1 的保留文件规则。每份运行报告是 `type: Run Report` 或 `type: Conflict Report` 的概念文档，至少包含 trace ID、来源、发现数量、抓取结果、文档版本、模型调用、概念 upsert、发布路径、warning 和冲突。
 
 ## 8. 抓取与同步行为
 
 ### 8.1 手动 URL
 
-手动 URL 的发现、重定向、抓取与标准化规则由[网页到 OKF Producer 规范](2026-08-07-web-to-okf-producer.md)定义。
+手动 URL 的发现、重定向、抓取与标准化规则由[网页到 OKF Producer 规范](web-to-okf-producer.md)定义。
 
 手动提交 URL 后，注册表创建一次性来源或任务，直接产生 DocumentDiscovered。后续抓取、标准化、提炼、解析和发布流程与 RSS 条目完全相同。
 
@@ -613,13 +619,13 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 
 ### 8.3 本地会话 JSONL
 
-会话 JSONL 的输入授权、游标、provider 映射、归并、generation 与 evidence 规则由[本地会话到 OKF Producer 规范](2026-08-07-session-to-okf-producer.md)定义。
+会话 JSONL 的输入授权、游标、provider 映射、归并、document version 与 evidence 规则由[本地会话到 OKF Producer 规范](session-to-okf-producer.md)定义。
 
 会话来源以文件追加而非网页发现作为更新触发。系统可以通过文件系统通知唤醒，也可以按固定周期扫描已登记根目录；两种方式都只读取控制库游标之后的完整行。
 
-会话版本的变化由 file identity、generation、行序号和归并后内容哈希共同决定，而非单独依赖 timestamp、id 或 sessionId。WorkBuddy 记录的时间戳不保证单调，且 id 可以在多条记录之间复用；Codex legacy rollout 可能同时保存 response_item 与 event_msg 的重复消息。因此归并与去重必须保留原始行序，并使用 provider 规则处理。
+会话版本的变化由已处理行范围、行序号和归并后内容哈希共同决定，而非单独依赖 timestamp、id 或 sessionId。file identity 只用于内部检测截断或替换，不进入公开 ID。WorkBuddy 记录的时间戳不保证单调，且 id 可以在多条记录之间复用；Codex legacy rollout 可能同时保存 response_item 与 event_msg 的重复消息。因此归并与去重必须保留原始行序，并使用 provider 规则处理。
 
-当会话 JSONL 追加新行时，系统只重新标准化受影响的尾部 turn，并把新的 evidence block 合并进现有 session generation。文件被截断或替换时，保留旧 generation 并新建 generation；绝不把新文件内容混入原会话证据版本。
+当会话 JSONL 追加新行时，系统只重新标准化受影响的尾部 turn，并把新的 evidence block 合并进稳定 session bundle，生成新的 `document_version_id` 并写入 `Update` 日志。文件被截断或替换时，在同一 session 目录重建当前 bundle，生成新的 `document_version_id` 并写入 `Source Reset` 日志；旧版本由 Evidence Store 保存。
 
 ### 8.4 增量更新
 
@@ -692,10 +698,10 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 - **安全测试：** 尝试访问私网 URL、重定向链、恶意文件、超大正文和提示词注入文本均被拒绝或隔离。
 - **端到端测试：** 一条 RSS 新条目完整生成来源笔记、关联概念笔记、索引和运行报告。
 - **跨语言契约测试：** 同一套事件 fixture 必须能被不同语言的组件实现消费和产出。
-- **会话归并测试：** 使用 Codex legacy rollout 与 WorkBuddy JSONL fixture，验证按行序读取、call ID 配对、重复消息去重、截断 generation 与未知记录保留。
-- **会话完整性测试：** 含密钥、绝对路径、系统指令、reasoning 和原始工具输出的 fixture 在 Evidence Store、LLM 请求与 vault 笔记中保持一致的完整物化。
+- **会话归并测试：** 使用 Codex legacy rollout 与 WorkBuddy JSONL fixture，验证按行序读取、call ID 配对、重复消息去重、截断/替换重建稳定 session bundle、`Source Reset` 日志与未知记录保留。
+- **会话完整性测试：** 含密钥、绝对路径、系统指令、reasoning 和原始工具输出的 fixture 在 Evidence Store、LLM 请求与 vault 笔记中保持一致的完整物化；provider 索引准确映射每个已发布 session 的 ID、标题与主文档链接。
 - **OKF 合规测试：** 扫描整个 vault，验证每个非保留 `.md` 均有可解析 YAML frontmatter 与非空 `type`；验证嵌套 `index.md` 无 frontmatter、根 `index.md` 至多声明 `okf_version`，并验证 `sources` 条目均含 `resource`。
-- **来源 Vault 布局测试：** 网页来源的路径、frontmatter、短引文、附件和增量更新遵循 [网页来源 Vault 目录与笔记规范](2026-08-07-web-vault-layout.md)；会话来源的 generation 隔离、bundle 文件和原始记录物化遵循 [本地会话 Vault 目录与 Bundle 规范](2026-08-07-session-vault-layout.md)。
+- **来源 Vault 布局测试：** 网页来源的稳定 source bundle、frontmatter、短引文、附件、`log.md` 和增量更新遵循 [网页来源 Vault 目录与笔记规范](web-vault-layout.md)；会话来源的稳定 session bundle、`log.md`、原始记录物化和增量发布遵循 [本地会话 Vault 目录与 Bundle 规范](session-vault-layout.md)。
 
 ## 14. 验收标准
 
@@ -708,6 +714,6 @@ RSS 适配器按照来源 schedule 轮询，并在可用时使用 ETag 与 Last-
 7. 含提示词注入文本的网页不能改变抓取策略、模型权限或 vault 文件范围。
 8. 单次发布失败后重跑可恢复，不产生半写入笔记或损坏 manifest。
 9. Codex rollout 与 WorkBuddy 会话 JSONL 的新增行无需 Discovery Adapter 或 Fetcher，即可增量生成会话来源笔记和关联概念。
-10. 同一会话中缺失工具结果、重复 ID、非单调时间戳、未知记录类型或文件截断均不会导致重复证据或覆盖旧 generation。
-11. 每个会话 generation 都发布到独立、可寻址的目录 bundle：主 session.md 保留完整用户/assistant 消息；reasoning.md、system.md、tools.md 与 events.md 保留对应的原始记录，并由主文档稳定引用；会话及 generation 的 index.md 仅作为无 frontmatter 的目录清单，旧 generation 不得被覆盖。
+10. 同一会话中缺失工具结果、重复 ID、非单调时间戳、未知记录类型或文件截断均不会导致重复证据或半更新 bundle；截断/替换在稳定 session 目录内生成新文档版本并写入 `Source Reset` 日志。
+11. 每个会话都发布到稳定、可寻址的目录 bundle：主 `session.md` 保留完整用户/assistant 消息；`reasoning.md`、`system.md`、`tools.md` 与 `events.md` 保留对应的原始记录，并由主文档稳定引用；session bundle 的 `index.md` 与 `log.md` 均无 frontmatter，provider `index.md` 将当前标题映射到稳定 session ID；历史正文由 Evidence Store 按 document version 保留。
 12. 发布后的 vault 通过 OKF v0.2 合规扫描：每个非保留 Markdown 文件有 `type`，保留文件遵循其专用结构，所有 `sources` 条目具有 `resource`，生成记录使用合规 actor 和时间戳。

@@ -2,12 +2,12 @@
 
 **状态：** 已确认的设计  
 **日期：** 2026-08-07  
-**所属设计：** [网页与本地会话到 Obsidian 知识管道](2026-08-03-web-to-obsidian-knowledge-pipeline-design.md)  
+**所属设计：** [网页与本地会话到 Obsidian 知识管道](web-to-obsidian-knowledge-pipeline-design.md)
 **范围：** 公开 URL、RSS 与 Atom 条目如何经发现、抓取、标准化和证据化，生产网页 OKF 来源工件
 
 ## 1. 定位与规范层级
 
-本文是网页来源的 producer 契约，规定从外部网页数据到已验证的 `DocumentNormalized` 工件的过程、状态和不变量。生产的最终 Vault 表示由[网页来源 Vault 目录与笔记规范](2026-08-07-web-vault-layout.md)定义；该 layout 规范是本文的唯一 OKF 落盘输出契约。
+本文是网页来源的 producer 契约，规定从外部网页数据到已验证的 `DocumentNormalized` 工件的过程、状态和不变量。生产的最终 Vault 表示由[网页来源 Vault 目录与笔记规范](web-vault-layout.md)定义；该 layout 规范是本文的唯一 OKF 落盘输出契约。
 
 本文不定义知识提炼、概念解析、检索或 UI 如何消费网页来源。通用事件信封、发布事务、Evidence Store、OKF v0.2 合规边界和共享安全策略由主设计稿定义；冲突时以主设计稿为准。
 
@@ -87,17 +87,19 @@ Normalizer 按 MIME 类型选择解析器。HTML 必须移除脚本、导航、�
 
 仅当 `DocumentNormalized` 已完成策略与结构校验时，producer 才能请求 Vault 物化。它向 layout 层提供 canonical/original URL、来源订阅 ID、标题、发布日期、抓取溯源、语言、内容哈希、文档版本、受限短引文和 evidence blocks。
 
-layout 层必须使用这些输入产生 `type: Web Article` 的 OKF 概念文档，且 `sources` 至少有一条以 canonical URL 为 `resource` 的来源。`source_id`、`document_version_id`、`evidence_ids` 等是该条目的扩展字段，不能替代 `resource`。网页全文、HTTP 响应及抓取日志仍在 Evidence Store；未经显式附件策略授权，不得发布附件。
+layout 层必须使用这些输入产生一个稳定的网页 source bundle：无 frontmatter 的 `index.md`、无 frontmatter 的 `log.md`、`type: Web Article` 的 `source.md`，以及经授权的 `assets/`。`source.md` 的 `sources` 至少有一条以 canonical URL 为 `resource` 的来源。`source_id`、`document_version_id`、`evidence_ids` 等是该条目的扩展字段，不能替代 `resource`。网页全文、HTTP 响应及抓取日志仍在 Evidence Store；未经显式附件策略授权，不得发布附件。
 
 ## 7. 更新、失败与可重放性
 
 - 同一 `event_id` 必须去重；同一语义事件必须幂等处理。
 - 抓取、标准化、物化的检查点只在各阶段完成后写入；发布失败从最后成功阶段重试。
 - 内容哈希不变时，跳过证据重新生成、提炼和来源笔记重复发布。
+- 内容哈希变化或来源元数据变化时，在同一 source bundle 路径更新 `source.md`、`index.md` 与 `log.md`，不创建新的年份目录或历史副本。
+- 成功发布的日志事件包含 actor、时间、事件类型、`document_version_id`、变更文件和原因；失败不写入 source-local `log.md`。
 - canonical URL 变化但稳定来源身份未变时，保存为同一来源的新版本；身份无法安全判定时，创建新来源而非合并。
 - 网络临时错误与 5xx 使用有上限的指数退避；4xx、robots 或策略拒绝不自动重试；解析/MIME 错误写入运行报告。
 - 来源暂不可访问时，保留既有证据与来源笔记，可标为 stale，但不得自动删除。
 
 ## 8. Producer 验证夹具
 
-网页 producer 的 fixture 与 golden-file 测试必须覆盖：RSS 与 Atom 条目去重、手动 URL 重定向上限、SSRF/禁用 IP 拒绝、robots 与大小限制、canonical URL 选择、确定性 Markdown 和内容哈希、证据偏移/ID 稳定性、未变化输入幂等性、内容变化的新版本，以及从 `DocumentNormalized` 到[网页 Vault layout](2026-08-07-web-vault-layout.md)所需字段的完整传递。
+网页 producer 的 fixture 与 golden-file 测试必须覆盖：RSS 与 Atom 条目去重、手动 URL 重定向上限、SSRF/禁用 IP 拒绝、robots 与大小限制、canonical URL 选择、确定性 Markdown 和内容哈希、证据偏移/ID 稳定性、未变化输入幂等性、内容变化的同路径新版本、source bundle 的 `index.md`/`log.md` 和原子发布，以及从 `DocumentNormalized` 到[网页 Vault layout](web-vault-layout.md)所需字段的完整传递。
